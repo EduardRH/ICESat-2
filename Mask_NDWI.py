@@ -111,7 +111,7 @@ for i in range(len(df_inputs.location)):
 
     
     t_start = datetime.datetime.now()
-    landmask = inpoly(lon,lat,NDWI_shp_out)
+    landmask = inpoly(lon,lat,NDWI_shp_out,True)
     t_end = datetime.datetime.now()
     print('Landmask done.')
 

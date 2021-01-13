@@ -240,7 +240,7 @@ for i in range(len(df_extents.city)):
     print('Running landmask...')
     t_start = datetime.datetime.now()
     #create boolean array of ICESat-2 returns, whether or not they're inside the given shapefile 
-    landmask = inpoly(lon_high_conf,lat_high_conf,subset_shp_path)
+    landmask = inpoly(lon_high_conf,lat_high_conf,subset_shp_path,True)
     t_end = datetime.datetime.now()
     print('Landmask done.')
 

@@ -69,7 +69,7 @@ def find_extents_shp(shp):
 
         return lon_min, lon_max, lat_min, lat_max
 
-def SRTM_filter(lon,lat,h):
+def SRTM_filter(lon,lat,h,outline_cond):
         import numpy as np
         import os, sys
         from osgeo import gdal, gdalconst
@@ -157,8 +157,19 @@ def gps2utc(gps_time):
         utc_time_str = [str(x) for x in utc_time]
         return utc_time_str
 
+def j20002utc(j2000_time):
+        #Converts ICESat-1 J2000 time to UTC time
+        from datetime import date,time,timedelta,datetime
+        import numpy as np
 
-def inpoly(lon,lat,shp_path):
+        t0 = datetime(2000,1,1,12,0,0,0)
+        
+        dt = j2000_time * timedelta(seconds=1)
+        utc_time = t0+dt
+        utc_time_str = [str(x) for x in utc_time]
+        return utc_time_str
+
+def inpoly(lon,lat,shp_path,outline_cond):
     #Derived from Darren Engwirda's inpoly Ray casting algorithm
     #https://github.com/dengwirda/inpoly
     import numpy as np
@@ -167,6 +178,29 @@ def inpoly(lon,lat,shp_path):
     ftol = 1e-15
 
     shp = gpd.read_file(shp_path)
+    
+    lon_min = np.min(shp.bounds.minx)
+    lon_max = np.max(shp.bounds.maxx)
+    lat_min = np.min(shp.bounds.miny)
+    lat_max = np.max(shp.bounds.maxy)
+
+    max_single_area = np.max(shp.area)
+    idx_max_single_area = np.argmax(np.asarray(shp.area))
+    
+    #identify feature that bounds whole shapefile, that messes up things
+    tmp_dlon = (np.asarray(shp.bounds.maxx) - np.asarray(shp.bounds.minx)) > 0.99*(lon_max-lon_min)
+    tmp_dlat = (np.asarray(shp.bounds.maxy) - np.asarray(shp.bounds.miny)) > 0.99*(lat_max-lat_min)
+
+    tmp_dlon_dlat_loc_cond = np.logical_and(np.count_nonzero(tmp_dlon)==1,np.count_nonzero(tmp_dlat)==1)
+    tmp_dlon_dlat_idx_cond = np.logical_and(tmp_dlon_dlat_loc_cond,np.argmax(tmp_dlon)==np.argmax(tmp_dlat))
+
+    if np.logical_and(tmp_dlon_dlat_idx_cond,outline_cond):
+        idx_removal = np.argmax(tmp_dlon)
+        shp = shp.drop([idx_removal])
+        shp = shp.reset_index()
+
+
+
 
     lon_coast = np.empty([0,1],dtype=float)
     lat_coast = np.empty([0,1],dtype=float)
@@ -180,13 +214,19 @@ def inpoly(lon,lat,shp_path):
             lat_coast = np.append(lat_coast,tmp[1,:])
             lat_coast = np.append(lat_coast,np.nan)
         elif tmp_geom_type == 'MultiPolygon':
-            tmp_list = list(shp.geometry[ii])
+            tmp_list = list(shp.boundary[ii])
             for jj in range(len(tmp_list)):
-                tmp = np.asarray(tmp_list[jj].exterior.xy)
+                tmp = np.asarray(tmp_list[jj].coords.xy)
                 lon_coast = np.append(lon_coast,tmp[0,:])
                 lon_coast = np.append(lon_coast,np.nan)
                 lat_coast = np.append(lat_coast,tmp[1,:])
                 lat_coast = np.append(lat_coast,np.nan)
+        elif tmp_geom_type == 'LineString':
+            tmp = np.asarray(shp.geometry[ii].xy)
+            lon_coast = np.append(lon_coast,tmp[0,:])
+            lon_coast = np.append(lon_coast,np.nan)
+            lat_coast = np.append(lat_coast,tmp[1,:])
+            lat_coast = np.append(lat_coast,np.nan)
     
     #input lon/lat points
     vert = np.stack((lon,lat),axis=1)
@@ -295,3 +335,129 @@ def inpoly(lon,lat,shp_path):
     landmask[idx_sort] = stat
     #returns landmask True/False array
     return landmask
+
+def deg2utm(lon,lat):
+    import numpy as np
+
+    pi = np.math.pi
+
+    n1 = len(lon)
+    n2 = len(lat)
+    if n1 != n2:
+        print('Longitude and latitude vectors not equal in length.')
+        print('Exiting')
+        return
+    
+
+    lon_deg = lon
+    lat_deg = lat
+    lon_rad = lon*pi/180
+    lat_rad = lat*pi/180
+
+    cos_lat = np.cos(lat_rad)
+    sin_lat = np.sin(lat_rad)
+    tan_lat = np.tan(lat_rad)
+    cos_lon = np.cos(lon_rad)
+    sin_lon = np.sin(lon_rad)
+    tan_lon = np.tan(lon_rad)
+
+    x = np.empty([n1,1],dtype=float)
+    y = np.empty([n2,1],dtype=float)
+    # zone_letter = np.empty([n1,1],dtype=str)
+    zone_letter = [None]*n1
+
+    semi_major_axis = 6378137.0
+    semi_minor_axis = 6356752.314245
+
+
+    second_eccentricity = np.sqrt(semi_major_axis**2 - semi_minor_axis**2)/semi_minor_axis
+    second_eccentricity_squared = second_eccentricity**2
+    c = semi_major_axis**2 / semi_minor_axis
+    utm_number = np.fix(lon_deg/6 + 31)
+    S = utm_number*6 - 183
+    delta_S = lon_rad - S*pi/180
+
+    #a = cos_lat * np.sin(delta_S)
+    epsilon = 0.5*np.log((1+cos_lat * np.sin(delta_S))/(1-cos_lat * np.sin(delta_S)))
+    nu = np.arctan(tan_lat / np.cos(delta_S)) - lat_rad
+    v = 0.9996 * c / np.sqrt(1+second_eccentricity_squared * cos_lat**2)
+    tau = 0.5*second_eccentricity_squared * epsilon**2 * cos_lat**2
+    a1 = np.sin(2*lat_rad)
+    a2 = a1 * cos_lat**2
+
+    j2 = lat_rad + 0.5*a1
+    j4 = 0.25*(3*j2 + a2)
+    j6 = (5*j4 + a2*cos_lat**2)/3
+
+    alpha = 0.75*second_eccentricity_squared
+    beta = (5/3) * alpha**2
+    gamma = (35/27) * alpha**3
+
+    Bm = 0.9996 * c * (lat_rad - alpha*j2 + beta*j4 - gamma*j6)
+
+    x = epsilon * v * (1+tau/3) + 500000
+    y = nu * v * (1+tau) + Bm
+
+    idx_y = y<0
+    y[idx_y] = y[idx_y] + 9999999
+
+
+    for i in range(n1):
+        if lat_deg[i]<-72:
+            zone_letter[i] = ' C'
+        elif lat_deg[i] < -64:
+            zone_letter[i] = ' D'
+        elif lat_deg[i] < -56:
+            zone_letter[i] = ' E'
+        elif lat_deg[i] < -48:
+            zone_letter[i] = ' F'
+        elif lat_deg[i] < -40:
+            zone_letter[i] = ' G'
+        elif lat_deg[i] < -32:
+            zone_letter[i] = ' H'
+        elif lat_deg[i] < -24:
+            zone_letter[i] = ' J'
+        elif lat_deg[i] < -16:
+            zone_letter[i] = ' K'
+        elif lat_deg[i] < -8:
+            zone_letter[i] = ' L'
+        elif lat_deg[i] < 0:
+            zone_letter[i] = ' M'
+        elif lat_deg[i] < 8:
+            zone_letter[i] = ' N'
+        elif lat_deg[i] < 16:
+            zone_letter[i] = ' P'
+        elif lat_deg[i] < 24:
+            zone_letter[i] = ' Q'
+        elif lat_deg[i] < 32:
+            zone_letter[i] = ' R'
+        elif lat_deg[i] < 40:
+            zone_letter[i] = ' S'
+        elif lat_deg[i] < 48:
+            zone_letter[i] = ' T'
+        elif lat_deg[i] < 56:
+            zone_letter[i] = ' U'
+        elif lat_deg[i] < 64:
+            zone_letter[i] = ' V'
+        elif lat_deg[i] < 72:
+            zone_letter[i] = ' W'
+        else:
+            zone_letter[i] = ' X'
+
+
+    utm_int = np.char.mod('%02d',utm_number.astype(int))
+
+    utm_int_list = utm_int.tolist()
+
+
+    print('zone_letter')
+    print(zone_letter[0])
+
+    print('utm_int')
+    print(utm_int[0])
+    # utmzone = np.char.add(utm_int, zone_letter)
+    # utmzone = utm_int + zone_letter
+    utmzone = utm_int_list + zone_letter
+
+
+    return x, y, utmzone
